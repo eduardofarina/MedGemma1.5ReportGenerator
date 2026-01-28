@@ -36,7 +36,7 @@ processor = AutoProcessor.from_pretrained(MODEL_ID, token=HF_TOKEN)
 model = AutoModelForImageTextToText.from_pretrained(
     MODEL_ID,
     device_map="auto",
-    torch_dtype=torch.float16,  # Use float16 instead of bfloat16 for better CUBLAS compatibility
+    torch_dtype=torch.bfloat16,
     token=HF_TOKEN,
 )
 model.generation_config.do_sample = True
@@ -218,7 +218,7 @@ def _generate_report_impl(
             tokenize=True,
             return_dict=True,
             return_tensors="pt"
-        ).to(device=model.device, dtype=torch.float16)
+        ).to(device=model.device, dtype=torch.bfloat16)
 
         input_len = inputs["input_ids"].shape[-1]
         print(f"Input sequence length: {input_len}")
