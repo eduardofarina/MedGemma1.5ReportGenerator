@@ -6,6 +6,13 @@ from typing import Optional, Tuple, List
 import gradio as gr
 from PIL import Image
 
+# Import spaces for HuggingFace Spaces GPU decorator
+try:
+    import spaces
+    SPACES_AVAILABLE = True
+except ImportError:
+    SPACES_AVAILABLE = False
+
 from dicom_processor import process_dicom_study
 from model_handler import MedGemmaHandler
 
@@ -118,7 +125,7 @@ Total Estimated: ~{total_vram_gb:.1f} GB
         return error_msg, "", []
 
 
-def generate_report(
+def _generate_report_impl(
     file_path: str,
     max_slices_per_series: int,
     image_size: int,
@@ -131,16 +138,21 @@ def generate_report(
     top_p: float,
     top_k: int,
     do_sample: bool,
-    progress=gr.Progress(track_tqdm=True)
+    progress=None
 ) -> str:
     """Generate radiology report using MedGemma."""
     global cached_data
+
+    # Helper for safe progress updates
+    def update_progress(value, desc=""):
+        if progress is not None:
+            progress(value, desc=desc)
 
     try:
         if file_path is None:
             return "Please upload a DICOM ZIP file first."
 
-        progress(0, desc="Loading model...")
+        update_progress(0, desc="Loading model...")
 
         global model_handler
         if model_handler is None:
@@ -153,16 +165,16 @@ def generate_report(
         )
 
         if use_cache:
-            progress(0.4, desc="Using cached images...")
+            update_progress(0.4, desc="Using cached images...")
             images = cached_data["images"]
             modality = cached_data["modality"]
         else:
-            progress(0.2, desc="Reading DICOM files...")
+            update_progress(0.2, desc="Reading DICOM files...")
 
             with open(file_path, 'rb') as f:
                 zip_bytes = f.read()
 
-            progress(0.4, desc="Processing images...")
+            update_progress(0.4, desc="Processing images...")
             slices_per_series = max_slices_per_series if max_slices_per_series > 0 else None
             wc = None if use_auto_window else window_center
             ww = None if use_auto_window else window_width
@@ -175,7 +187,7 @@ def generate_report(
                 window_width=ww
             )
 
-        progress(0.6, desc=f"Generating report with MedGemma 1.5 ({len(images)} images)...")
+        update_progress(0.6, desc=f"Generating report with MedGemma 1.5 ({len(images)} images)...")
 
         # Use custom prompt or default
         if not prompt.strip():
@@ -191,7 +203,7 @@ def generate_report(
             do_sample=do_sample,
         )
 
-        progress(1.0, desc="Complete!")
+        update_progress(1.0, desc="Complete!")
 
         return report
 
@@ -199,6 +211,54 @@ def generate_report(
         error_msg = f"Error generating report: {str(e)}\n\n{traceback.format_exc()}"
         print(error_msg)
         return error_msg
+
+
+# Apply @spaces.GPU decorator if running on HuggingFace Spaces
+if SPACES_AVAILABLE:
+    @spaces.GPU
+    def generate_report(
+        file_path: str,
+        max_slices_per_series: int,
+        image_size: int,
+        window_center: float,
+        window_width: float,
+        use_auto_window: bool,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        top_k: int,
+        do_sample: bool,
+        progress=gr.Progress(track_tqdm=True)
+    ) -> str:
+        """Generate radiology report using MedGemma (GPU-accelerated on HF Spaces)."""
+        return _generate_report_impl(
+            file_path, max_slices_per_series, image_size,
+            window_center, window_width, use_auto_window,
+            prompt, max_tokens, temperature, top_p, top_k, do_sample, progress
+        )
+else:
+    def generate_report(
+        file_path: str,
+        max_slices_per_series: int,
+        image_size: int,
+        window_center: float,
+        window_width: float,
+        use_auto_window: bool,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        top_k: int,
+        do_sample: bool,
+        progress=gr.Progress(track_tqdm=True)
+    ) -> str:
+        """Generate radiology report using MedGemma."""
+        return _generate_report_impl(
+            file_path, max_slices_per_series, image_size,
+            window_center, window_width, use_auto_window,
+            prompt, max_tokens, temperature, top_p, top_k, do_sample, progress
+        )
 
 
 def create_interface():
