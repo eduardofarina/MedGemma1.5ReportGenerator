@@ -49,11 +49,13 @@ class MedGemmaHandler:
         self.processor = None
         self.model = None
 
-        # Check for local model path
+        # Check for local model path (useful for local development)
         local_model_path = os.path.join(os.path.dirname(__file__), "models", "medgemma-1.5-4b-it")
-        if os.path.exists(local_model_path):
+        if os.path.exists(local_model_path) and os.path.isfile(os.path.join(local_model_path, "config.json")):
             self.model_id = local_model_path
             print(f"Using local model from: {local_model_path}")
+        else:
+            print(f"Using model from Hugging Face Hub: {self.model_id}")
 
     def load_model(self):
         """Load the MedGemma 1.5 model and processor."""
