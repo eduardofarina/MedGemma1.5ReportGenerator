@@ -1,6 +1,13 @@
 """
 Main Gradio application for MedGemma DICOM report drafting.
 """
+# IMPORTANT: Import spaces FIRST before any CUDA-related packages (torch, transformers)
+try:
+    import spaces
+    SPACES_AVAILABLE = True
+except ImportError:
+    SPACES_AVAILABLE = False
+
 import os
 import traceback
 from typing import Tuple, List
@@ -9,13 +16,6 @@ import gradio as gr
 import torch
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForImageTextToText
-
-# Import spaces for HuggingFace Spaces GPU decorator
-try:
-    import spaces
-    SPACES_AVAILABLE = True
-except ImportError:
-    SPACES_AVAILABLE = False
 
 from dicom_processor import process_dicom_study
 
