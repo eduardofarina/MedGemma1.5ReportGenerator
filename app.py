@@ -9,6 +9,7 @@ except ImportError:
     SPACES_AVAILABLE = False
 
 import os
+import tempfile
 import traceback
 from typing import Tuple, List
 
@@ -192,8 +193,15 @@ def _generate_report_impl(
         if not prompt.strip():
             prompt = f"You are a radiologist, please draft the full structured report for the following {modality} exam. Include the following sections: Technique, Findings, and Impression."
 
-        # Build message content
-        content = [{"type": "image", "image": img} for img in images]
+        # Save images to temp files and build message content using "url" format
+        # This matches the working medgemma space implementation
+        temp_files = []
+        content = []
+        for i, img in enumerate(images):
+            temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            img.save(temp_file.name, format="PNG")
+            temp_files.append(temp_file.name)
+            content.append({"type": "image", "url": temp_file.name})
         content.append({"type": "text", "text": prompt})
 
         messages = [
@@ -240,11 +248,25 @@ def _generate_report_impl(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+        # Clean up temp files
+        for temp_file in temp_files:
+            try:
+                os.unlink(temp_file)
+            except Exception:
+                pass
+
         return report
 
     except Exception as e:
         error_msg = f"Error generating report: {str(e)}\n\n{traceback.format_exc()}"
         print(error_msg)
+        # Clean up temp files on error
+        if 'temp_files' in locals():
+            for temp_file in temp_files:
+                try:
+                    os.unlink(temp_file)
+                except Exception:
+                    pass
         return error_msg
 
 
