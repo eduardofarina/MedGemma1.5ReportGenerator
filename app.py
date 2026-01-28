@@ -1,10 +1,14 @@
 """
 Main Gradio application for MedGemma DICOM report drafting.
 """
+import os
 import traceback
-from typing import Optional, Tuple, List
+from typing import Tuple, List
+
 import gradio as gr
+import torch
 from PIL import Image
+from transformers import AutoProcessor, AutoModelForImageTextToText
 
 # Import spaces for HuggingFace Spaces GPU decorator
 try:
@@ -14,9 +18,26 @@ except ImportError:
     SPACES_AVAILABLE = False
 
 from dicom_processor import process_dicom_study
-from model_handler import MedGemmaHandler
 
-model_handler: Optional[MedGemmaHandler] = None
+# ============================================================================
+# Model Loading - MUST be at module level for ZeroGPU compatibility
+# ============================================================================
+print("Loading MedGemma model at startup...")
+MODEL_ID = os.getenv("MODEL_ID", "google/medgemma-1.5-4b-it")
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+processor = AutoProcessor.from_pretrained(MODEL_ID, token=HF_TOKEN)
+model = AutoModelForImageTextToText.from_pretrained(
+    MODEL_ID,
+    device_map="auto",
+    torch_dtype=torch.bfloat16,
+    token=HF_TOKEN,
+)
+model.generation_config.do_sample = True
+print(f"Model loaded: {MODEL_ID}")
+print(f"Model device: {model.device}")
+print(f"Model dtype: {next(model.parameters()).dtype}")
+
 # Store processed data for reuse
 cached_data = {
     "zip_bytes": None,
@@ -24,15 +45,6 @@ cached_data = {
     "modality": None,
     "study_info": None
 }
-
-
-def load_model():
-    """Load the MedGemma model."""
-    global model_handler
-    if model_handler is None:
-        model_handler = MedGemmaHandler()
-        model_handler.load_model()
-    return model_handler
 
 
 def process_dicom_file(
@@ -85,9 +97,7 @@ def process_dicom_file(
         # Estimate VRAM usage based on actual image size
         num_images = study_info.get('ProcessedImages', 0)
         img_size = study_info.get('ImageSize', 896)
-        # Model base: ~8GB, per image scales with size squared
         model_vram_gb = 8.0
-        # Base estimate for 896x896 is ~50MB, scale proportionally
         base_per_image_mb = 50
         size_factor = (img_size / 896) ** 2
         per_image_vram_mb = base_per_image_mb * size_factor
@@ -114,7 +124,7 @@ Images ({num_images} x {img_size}x{img_size}): ~{images_vram_gb:.1f} GB
 Total Estimated: ~{total_vram_gb:.1f} GB
 """
 
-        status = f"✓ Processed {len(images)} images from {study_info['Modality']} study"
+        status = f"Processed {len(images)} images from {study_info['Modality']} study"
 
         return status, info_text, images
 
@@ -138,25 +148,13 @@ def _generate_report_impl(
     top_p: float,
     top_k: int,
     do_sample: bool,
-    progress=None
 ) -> str:
     """Generate radiology report using MedGemma."""
     global cached_data
 
-    # Helper for safe progress updates
-    def update_progress(value, desc=""):
-        if progress is not None:
-            progress(value, desc=desc)
-
     try:
         if file_path is None:
             return "Please upload a DICOM ZIP file first."
-
-        update_progress(0, desc="Loading model...")
-
-        global model_handler
-        if model_handler is None:
-            model_handler = load_model()
 
         # Check if we can use cached images
         use_cache = (
@@ -165,16 +163,12 @@ def _generate_report_impl(
         )
 
         if use_cache:
-            update_progress(0.4, desc="Using cached images...")
             images = cached_data["images"]
             modality = cached_data["modality"]
         else:
-            update_progress(0.2, desc="Reading DICOM files...")
-
             with open(file_path, 'rb') as f:
                 zip_bytes = f.read()
 
-            update_progress(0.4, desc="Processing images...")
             slices_per_series = max_slices_per_series if max_slices_per_series > 0 else None
             wc = None if use_auto_window else window_center
             ww = None if use_auto_window else window_width
@@ -187,23 +181,59 @@ def _generate_report_impl(
                 window_width=ww
             )
 
-        update_progress(0.6, desc=f"Generating report with MedGemma 1.5 ({len(images)} images)...")
+        print(f"Processing {len(images)} images...")
 
         # Use custom prompt or default
         if not prompt.strip():
             prompt = f"You are a radiologist, please draft the full structured report for the following {modality} exam. Include the following sections: Technique, Findings, and Impression."
 
-        report = model_handler.generate_report(
-            images=images,
-            prompt=prompt,
-            max_new_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            do_sample=do_sample,
-        )
+        # Build message content
+        content = [{"type": "image", "image": img} for img in images]
+        content.append({"type": "text", "text": prompt})
 
-        update_progress(1.0, desc="Complete!")
+        messages = [
+            {
+                "role": "user",
+                "content": content
+            }
+        ]
+
+        # Process inputs
+        inputs = processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt"
+        ).to(device=model.device, dtype=torch.bfloat16)
+
+        input_len = inputs["input_ids"].shape[-1]
+        print(f"Input sequence length: {input_len}")
+
+        # Generate report
+        with torch.inference_mode():
+            if do_sample and temperature > 0:
+                generation = model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    do_sample=True,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                )
+            else:
+                generation = model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    do_sample=False,
+                )
+            generation = generation[0][input_len:]
+
+        report = processor.decode(generation, skip_special_tokens=True)
+
+        # Clear GPU cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return report
 
@@ -215,7 +245,7 @@ def _generate_report_impl(
 
 # Apply @spaces.GPU decorator if running on HuggingFace Spaces
 if SPACES_AVAILABLE:
-    @spaces.GPU
+    @spaces.GPU(duration=120)
     def generate_report(
         file_path: str,
         max_slices_per_series: int,
@@ -229,13 +259,12 @@ if SPACES_AVAILABLE:
         top_p: float,
         top_k: int,
         do_sample: bool,
-        progress=gr.Progress(track_tqdm=True)
     ) -> str:
         """Generate radiology report using MedGemma (GPU-accelerated on HF Spaces)."""
         return _generate_report_impl(
             file_path, max_slices_per_series, image_size,
             window_center, window_width, use_auto_window,
-            prompt, max_tokens, temperature, top_p, top_k, do_sample, progress
+            prompt, max_tokens, temperature, top_p, top_k, do_sample
         )
 else:
     def generate_report(
@@ -251,13 +280,12 @@ else:
         top_p: float,
         top_k: int,
         do_sample: bool,
-        progress=gr.Progress(track_tqdm=True)
     ) -> str:
         """Generate radiology report using MedGemma."""
         return _generate_report_impl(
             file_path, max_slices_per_series, image_size,
             window_center, window_width, use_auto_window,
-            prompt, max_tokens, temperature, top_p, top_k, do_sample, progress
+            prompt, max_tokens, temperature, top_p, top_k, do_sample
         )
 
 
@@ -265,7 +293,7 @@ def create_interface():
     """Create the Gradio interface."""
 
     with gr.Blocks(title="MedGemma 1.5 DICOM Report Generator", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# 🏥 MedGemma 1.5 DICOM Report Generator")
+        gr.Markdown("# MedGemma 1.5 DICOM Report Generator")
         gr.Markdown("Upload a ZIP file containing DICOM images to generate a structured radiology report.")
 
         with gr.Row():
@@ -334,7 +362,7 @@ def create_interface():
 
             # Middle column: Image preview
             with gr.Column(scale=1):
-                gr.Markdown("### 🖼️ Image Preview")
+                gr.Markdown("### Image Preview")
                 gr.Markdown("*Preview of sampled slices that will be sent to the model*")
 
                 image_gallery = gr.Gallery(
@@ -393,7 +421,7 @@ def create_interface():
                         info="Uncheck for deterministic output"
                     )
 
-                generate_btn = gr.Button("🚀 Generate Report", variant="primary", size="lg")
+                generate_btn = gr.Button("Generate Report", variant="primary", size="lg")
 
                 report_output = gr.Textbox(
                     label="Generated Report",
@@ -467,7 +495,6 @@ def create_interface():
 def main():
     """Main entry point."""
     print("Starting MedGemma 1.5 DICOM Report Generator...")
-    print("Note: The model will be loaded on first report generation.")
 
     demo = create_interface()
     demo.launch(
