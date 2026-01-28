@@ -1,0 +1,57 @@
+name: Deploy to HuggingFace Spaces
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install huggingface_hub
+        run: pip install huggingface_hub
+
+      - name: Deploy to HuggingFace Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<EOF
+          from huggingface_hub import HfApi
+          import os
+
+          api = HfApi(token=os.environ['HF_TOKEN'])
+
+          # Upload files to the Space
+          api.upload_folder(
+              folder_path='.',
+              repo_id='eduardofarina/MedGemma1.5ReportGenerator',
+              repo_type='space',
+              ignore_patterns=[
+                  'models/*',
+                  '.git/*',
+                  '.github/*',
+                  '__pycache__/*',
+                  '*.pyc',
+                  '.env',
+                  'environment.yml',
+                  'setup*.bat',
+                  'setup*.sh',
+                  'check_gpu.py',
+                  'download_model.py',
+                  'dicom_utils.py',
+              ],
+          )
+          print('Deployment to HuggingFace Spaces complete!')
+          EOF

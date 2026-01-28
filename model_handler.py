@@ -86,10 +86,10 @@ class MedGemmaHandler:
 
         # Load model with proper device configuration
         if self.device == "cuda" and torch.cuda.is_available():
-            print("Loading model on GPU with bfloat16...")
+            print("Loading model on GPU with float16...")
             self.model = AutoModelForImageTextToText.from_pretrained(
                 self.model_id,
-                torch_dtype=torch.bfloat16,
+                torch_dtype=torch.float16,
                 device_map="cuda",
                 token=hf_token,
             )
@@ -139,7 +139,7 @@ class MedGemmaHandler:
 
         # Move to device with proper dtype
         if self.device == "cuda":
-            inputs = inputs.to(self.model.device, dtype=torch.bfloat16)
+            inputs = inputs.to(self.model.device, dtype=torch.float16)
         else:
             inputs = inputs.to(self.model.device)
 
