@@ -14,6 +14,11 @@ from typing import Tuple, List
 
 import gradio as gr
 import torch
+
+# Disable TF32 to avoid CUBLAS_STATUS_INVALID_VALUE errors with certain tensor shapes
+# This forces cuBLAS to use more compatible computation paths
+torch.backends.cuda.matmul.allow_tf32 = False
+torch.backends.cudnn.allow_tf32 = False
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForImageTextToText
 
@@ -30,7 +35,7 @@ processor = AutoProcessor.from_pretrained(MODEL_ID, token=HF_TOKEN)
 model = AutoModelForImageTextToText.from_pretrained(
     MODEL_ID,
     device_map="auto",
-    torch_dtype=torch.bfloat16,
+    torch_dtype=torch.float16,  # Use float16 instead of bfloat16 for better CUBLAS compatibility
     token=HF_TOKEN,
 )
 model.generation_config.do_sample = True
@@ -205,7 +210,7 @@ def _generate_report_impl(
             tokenize=True,
             return_dict=True,
             return_tensors="pt"
-        ).to(device=model.device, dtype=torch.bfloat16)
+        ).to(device=model.device, dtype=torch.float16)
 
         input_len = inputs["input_ids"].shape[-1]
         print(f"Input sequence length: {input_len}")
