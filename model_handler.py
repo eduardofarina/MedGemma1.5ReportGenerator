@@ -97,14 +97,16 @@ class MedGemmaHandler:
         self.processor = AutoProcessor.from_pretrained(self.model_id, token=hf_token)
 
         # Load model with proper device configuration
+        # Use attn_implementation="eager" on MIG to avoid SDPA CUBLAS issues
         if self.device == "cuda" and torch.cuda.is_available():
             if self.use_float32:
-                print("Loading model on GPU with float32 (MIG compatibility mode)...")
+                print("Loading model on GPU with float32 + eager attention (MIG compatibility)...")
                 self.model = AutoModelForImageTextToText.from_pretrained(
                     self.model_id,
                     torch_dtype=torch.float32,
                     device_map="cuda",
                     token=hf_token,
+                    attn_implementation="eager",  # Disable SDPA for MIG compatibility
                 )
             else:
                 print("Loading model on GPU with bfloat16...")

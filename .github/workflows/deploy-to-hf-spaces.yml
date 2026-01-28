@@ -27,11 +27,22 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python - <<EOF
+          python << 'SCRIPT'
           from huggingface_hub import HfApi
           import os
+          import sys
 
-          api = HfApi(token=os.environ['HF_TOKEN'])
+          token = os.environ.get('HF_TOKEN')
+          if not token:
+              print("ERROR: HF_TOKEN secret is not set!")
+              print("Please add HF_TOKEN to your repository secrets:")
+              print("  1. Go to Settings > Secrets and variables > Actions")
+              print("  2. Click 'New repository secret'")
+              print("  3. Name: HF_TOKEN, Value: your HuggingFace token")
+              sys.exit(1)
+
+          print("HF_TOKEN found, starting deployment...")
+          api = HfApi(token=token)
 
           # Upload files to the Space
           api.upload_folder(
@@ -54,4 +65,4 @@ jobs:
               ],
           )
           print('Deployment to HuggingFace Spaces complete!')
-          EOF
+          SCRIPT
